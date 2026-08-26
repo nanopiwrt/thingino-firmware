@@ -41,11 +41,10 @@ config BR2_PACKAGE_THINGINO_ISP_OPEN
 	select BR2_PACKAGE_LIBAUDIOPROCESS_NEO
 	help
 	  Use the open-tx-isp kernel driver. The userspace libimp.so
-	  ABI provider is selected by the separate choice below; on T31
-	  the proprietary Ingenic libimp.so is recommended because the
-	  OpenIMP build is still video-focused and omits the IMP audio
-	  and some OSD/IVS entry points that feature-rich streamers
-	  (prudynt) require.
+	  ABI provider is selected by the separate choice below. The
+	  OpenIMP T31 build is still video-focused and omits the IMP
+	  audio and some OSD/IVS entry points; prudynt-t is adapted to
+	  that when built against OpenIMP.
 
 	  Image tuning and sensor coverage remain experimental.
 
@@ -58,8 +57,10 @@ choice
 	help
 	  Select the libimp.so provider for the open-tx-isp kernel
 	  driver. OpenIMP is the fully open replacement but its T31
-	  build is video-focused (no IMP audio, incomplete OSD/IVS),
-	  which breaks the link of streamers that use those entry points.
+	  build is video-focused (no IMP audio, incomplete OSD/IVS).
+	  prudynt-t is built with USE_OPENIMP=1 when this option is
+	  selected, compiling out the entry points OpenIMP omits;
+	  other streamers that link those symbols may still break.
 
 config BR2_PACKAGE_THINGINO_ISP_OPEN_ABI_OPENIMP
 	bool "OpenIMP"

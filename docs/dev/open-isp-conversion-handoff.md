@@ -8,9 +8,10 @@ Camera: `cinnado_d1_t31l_sc2336_atbm6031` (T31L, SC2336, ATBM6031) at `192.168.8
 Switched the Cinnado D1 from the proprietary Ingenic ISP blob to the
 open-source `open-tx-isp` kernel driver, plus a set of driver fixes that
 removed a motor timer-interrupt storm and an ISP thread D-state load-average
-spike. The streamer (prudynt) links against the *proprietary* Ingenic
-`libimp.so` (not OpenIMP) because OpenIMP's T31 build is video-focused and
-lacks the IMP audio/IVS symbols prudynt needs.
+spike. The streamer (prudynt) now links against OpenIMP (the open-source
+`libimp.so`) via the `open-isp.fragment` OpenIMP userspace ABI choice.
+prudynt is built with `USE_OPENIMP=1`, which compiles out the IMP AENC/ADEC
+and fisheye entry points OpenIMP's T31 build does not export.
 
 ## Commits (oldest to newest, all on `switch-to-open-isp`)
 
@@ -58,8 +59,9 @@ lacks the IMP audio/IVS symbols prudynt needs.
   the two fixes applied in-tree. Used to *generate* the `0001`/`0002` patches.
   Do not rely on it at build time; the patches are authoritative.
 
-- `overrides/prudynt-t` — unrelated earlier streamer experiment (commented out
-  in local.mk); not used.
+- `overrides/prudynt-t` — active `PRUDYNT_T_OVERRIDE_SRCDIR`. Carries the
+  `USE_OPENIMP` source guards as a local commit; the authoritative copy for
+  clean builds is `package/prudynt-t/0001-openimp-guard-missing-imp-entry-points.patch`.
 
 - `package/all-patches/linux/3.10.14/0092-wdt-shutdown-keep-armed.patch` —
   untracked, intentionally left alone (watchdog shutdown behavior; author
@@ -149,8 +151,10 @@ To validate: flash the corrected build, then in a dark vs bright scene check
   noisy failure — check `images/*.md` partition sizing before flashing.
 
 - The `open-isp.fragment` selects `BR2_PACKAGE_THINGINO_ISP_OPEN=y` and
-  `BR2_PACKAGE_THINGINO_ISP_OPEN_ABI_LIBIMP=y` (proprietary libimp). Do NOT
-  switch to OpenIMP on T31 until OpenIMP implements IMP audio/IVS symbols.
+  `BR2_PACKAGE_THINGINO_ISP_OPEN_ABI_OPENIMP=y` (OpenIMP userspace). prudynt
+  is built with `USE_OPENIMP=1`, which compiles out the IMP AENC/ADEC and
+  fisheye entry points OpenIMP's T31 build does not export. OpenIMP's T31
+  build remains video-focused: audio and motion detection are non-functional.
 
 - The camera root password / WiFi / SSH keys persist via the `cfg-backup`
   mechanism (mtd2 backup partition) and `S37cfg-autorestore`. After a flash

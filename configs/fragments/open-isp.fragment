@@ -1,6 +1,6 @@
-# Open ISP stack (experimental): open-tx-isp kernel driver.
-# Userspace ABI defaults to the proprietary Ingenic libimp.so because
-# the T31 OpenIMP build is video-focused and lacks the IMP audio/IVS
-# entry points prudynt links against.
+# Open ISP stack (experimental): open-tx-isp kernel driver plus the
+# OpenIMP userspace ABI.  prudynt is built with USE_OPENIMP=1, which
+# compiles out the IMP AENC/ADEC and fisheye entry points OpenIMP's
+# T31 build does not export.
 BR2_PACKAGE_THINGINO_ISP_OPEN=y
-BR2_PACKAGE_THINGINO_ISP_OPEN_ABI_LIBIMP=y
+BR2_PACKAGE_THINGINO_ISP_OPEN_ABI_OPENIMP=y
