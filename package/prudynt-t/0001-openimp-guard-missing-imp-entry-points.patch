@@ -1,0 +1,251 @@
+From 6966af2caf927cabff4898b1c051ca072d0dfe89 Mon Sep 17 00:00:00 2001
+From: Paul Philippov <paul@themactep.com>
+Date: Tue, 25 Aug 2026 17:13:54 -0400
+Subject: [PATCH] guard IMP AENC/ADEC and fisheye entry points behind
+ USE_OPENIMP
+
+OpenIMP's T31 libimp.so does not export the IMP audio encode/decode
+(AENC/ADEC) entry points or IMP_Encoder_SetFisheyeEnableStatus.  When
+prudynt is built against OpenIMP (USE_OPENIMP=1, which adds -DOPENIMP),
+compile those call sites out so the streamer links cleanly against the
+open ISP userspace.  Audio input stays on the AI path (captured as raw
+PCM when a built-in AENC codec is requested) and backchannel decode is
+disabled.
+
+Signed-off-by: Paul Philippov <paul@themactep.com>
+---
+ Makefile                        | 11 +++++++++++
+ src/audio/AudioWorker.cpp       | 17 ++++++++++++-----
+ src/audio/BackchannelWorker.cpp |  8 ++++++++
+ src/audio/IMPAudio.cpp          | 10 ++++++++++
+ src/audio/IMPBackchannel.cpp    | 15 +++++++++++++++
+ src/core/main.cpp               |  2 ++
+ src/isp/imp_control.cpp         |  3 ++-
+ 7 files changed, 60 insertions(+), 6 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index d9b6200..2dca777 100644
+--- a/Makefile
++++ b/Makefile
+@@ -94,6 +94,17 @@ OSD_SCHRIFT_LIB_HYBRID_LINE  =
+ OSD_SCHRIFT_LIB_DYNAMIC_LINE =
+ endif
+ 
++# OpenIMP (open ISP userspace) build
++# ------------------------------------
++# OpenIMP's T31 libimp.so omits the IMP audio encode/decode (AENC/ADEC)
++# entry points and IMP_Encoder_SetFisheyeEnableStatus.  When linking
++# against OpenIMP, compile those call sites out.
++USE_OPENIMP            ?= 0
++
++ifeq ($(USE_OPENIMP),1)
++override CFLAGS        += -DOPENIMP
++endif
++
+ # Optional FLAC support
+ # ----------------------
+ USE_FLAC               ?= 1
+diff --git a/src/audio/AudioWorker.cpp b/src/audio/AudioWorker.cpp
+index bf1d3a8..009fc6f 100644
+--- a/src/audio/AudioWorker.cpp
++++ b/src/audio/AudioWorker.cpp
+@@ -217,7 +217,9 @@ void AudioWorker::process_audio_frame(IMPAudioFrame &frame) {
+     frame_samples = frame.len / (sample_size_bytes * channels);
+   }
+ 
++#if !defined(OPENIMP)
+   IMPAudioStream stream;
++#endif
+   bool got_stream = false;
+   if (global_audio[encChn]->imp_audio->directEncode) {
+     // Direct encoding --- bypass IMP_AENC to avoid its heap corruption bug
+@@ -237,6 +239,7 @@ void AudioWorker::process_audio_frame(IMPAudioFrame &frame) {
+       start = end = nullptr;
+     }
+   } else if (global_audio[encChn]->imp_audio->format != IMPAudioFormat::PCM) {
++#if !defined(OPENIMP)
+     // IMP_AENC path for built-in codecs (G711A, G711U, G726)
+     if (IMP_AENC_SendFrame(global_audio[encChn]->aeChn, &frame) != 0) {
+       LOG_ERROR("IMP_AENC_SendFrame(" << global_audio[encChn]->devId << ", "
+@@ -258,6 +261,7 @@ void AudioWorker::process_audio_frame(IMPAudioFrame &frame) {
+       start = (uint8_t *)stream.stream;
+       end = start + stream.len;
+     }
++#endif
+   }
+ 
+   if (end > start) {
+@@ -345,11 +349,14 @@ void AudioWorker::process_audio_frame(IMPAudioFrame &frame) {
+     }
+   }
+ 
+-  if (got_stream &&
+-      IMP_AENC_ReleaseStream(global_audio[encChn]->aeChn, &stream) < 0) {
+-    LOG_ERROR("IMP_AENC_ReleaseStream(" << global_audio[encChn]->devId << ", "
+-                                        << global_audio[encChn]->aeChn
+-                                        << ", &stream) failed");
++  if (got_stream) {
++#if !defined(OPENIMP)
++    if (IMP_AENC_ReleaseStream(global_audio[encChn]->aeChn, &stream) < 0) {
++      LOG_ERROR("IMP_AENC_ReleaseStream(" << global_audio[encChn]->devId << ", "
++                                          << global_audio[encChn]->aeChn
++                                          << ", &stream) failed");
++    }
++#endif
+   }
+ }
+ 
+diff --git a/src/audio/BackchannelWorker.cpp b/src/audio/BackchannelWorker.cpp
+index fa7ccfa..8c2e5a9 100644
+--- a/src/audio/BackchannelWorker.cpp
++++ b/src/audio/BackchannelWorker.cpp
+@@ -93,6 +93,7 @@ bool BackchannelWorker::decodeFrame(const uint8_t *payload, size_t payloadSize,
+   }
+ #endif
+ 
++#if !defined(OPENIMP)
+   IMPAudioStream stream_in;
+   stream_in.stream = const_cast<uint8_t *>(payload);
+   stream_in.len = static_cast<int>(payloadSize);
+@@ -140,6 +141,13 @@ bool BackchannelWorker::decodeFrame(const uint8_t *payload, size_t payloadSize,
+   LOG_DEBUG("ADEC_GetStream succeeded but produced no data.");
+   outPcmBuffer.clear();
+   return true;
++#else
++  (void)payload;
++  (void)payloadSize;
++  (void)format;
++  outPcmBuffer.clear();
++  return false;
++#endif
+ }
+ 
+ bool BackchannelWorker::processFrame(const BackchannelFrame &frame) {
+diff --git a/src/audio/IMPAudio.cpp b/src/audio/IMPAudio.cpp
+index 87dad64..78d2a2c 100644
+--- a/src/audio/IMPAudio.cpp
++++ b/src/audio/IMPAudio.cpp
+@@ -128,8 +128,14 @@ int IMPAudio::init() {
+   sample_rate = ioattr.samplerate;
+ 
+   if (encattr.type > IMPAudioPalyloadType::PT_PCM) {
++#if !defined(OPENIMP)
+     ret = IMP_AENC_CreateChn(aeChn, &encattr);
+     LOG_DEBUG_OR_ERROR(ret, "IMP_AENC_CreateChn(" << aeChn << ", &encattr)");
++#else
++    LOG_WARN("OpenIMP build: IMP AENC is unavailable; "
++             << cfg->audio.input_format
++             << " audio input will be captured as raw PCM");
++#endif
+   }
+ 
+   // FAAC encodes fixed 1024-sample frames.  The HAL requires numPerFrm to be
+@@ -310,8 +316,10 @@ int IMPAudio::deinit() {
+     if (directEncode) {
+       encoder->close();
+     } else {
++#if !defined(OPENIMP)
+       ret = IMP_AENC_UnRegisterEncoder(&handle);
+       LOG_DEBUG_OR_ERROR(ret, "IMP_AENC_UnRegisterEncoder(&handle)");
++#endif
+     }
+ 
+     delete encoder;
+@@ -320,8 +328,10 @@ int IMPAudio::deinit() {
+   }
+ 
+   if (!directEncode && format != IMPAudioFormat::PCM) {
++#if !defined(OPENIMP)
+     ret = IMP_AENC_DestroyChn(aeChn);
+     LOG_DEBUG_OR_ERROR(ret, "IMP_AENC_DestroyChn(" << aeChn << ")");
++#endif
+   }
+ 
+   ret = IMP_AI_DisableChn(devId, inChn);
+diff --git a/src/audio/IMPBackchannel.cpp b/src/audio/IMPBackchannel.cpp
+index 9a33910..fd84254 100644
+--- a/src/audio/IMPBackchannel.cpp
++++ b/src/audio/IMPBackchannel.cpp
+@@ -146,6 +146,11 @@ IMPBackchannel *IMPBackchannel::createNew() {
+ }
+ 
+ int IMPBackchannel::ensureDecoderChannel(IMPBackchannelFormat format) {
++#if defined(OPENIMP)
++  (void)format;
++  LOG_WARN("OpenIMP build: IMP ADEC unavailable; backchannel disabled");
++  return -1;
++#else
+   int ret = 0;
+   IMPAudioDecChnAttr adec_attr;
+   adec_attr.mode = ADEC_MODE_PACK;
+@@ -204,10 +209,15 @@ int IMPBackchannel::ensureDecoderChannel(IMPBackchannelFormat format) {
+   default:
+     return -1;
+   }
++#endif
+ }
+ 
+ int IMPBackchannel::init() {
+   LOG_DEBUG("IMPBackchannel::init()");
++#if defined(OPENIMP)
++  LOG_INFO("OpenIMP build: skipping IMP ADEC channel setup");
++  return 0;
++#else
+   int ret = 0;
+ 
+ #if !defined(PLATFORM_T23)
+@@ -267,6 +277,7 @@ int IMPBackchannel::init() {
+     LOG_DEBUG_OR_ERROR(ret, "IMP_ADEC_CreateChn(AAC, " << adChn_aac << ")");
+ #endif
+   }
++#endif
+ #endif
+ 
+   return 0;
+@@ -274,6 +285,9 @@ int IMPBackchannel::init() {
+ 
+ void IMPBackchannel::deinit() {
+   LOG_DEBUG("IMPBackchannel::deinit()");
++#if defined(OPENIMP)
++  return;
++#else
+   int ret;
+ 
+ #define DESTROY_ADEC(EnumName, NameString, PayloadType, Frequency, MimeType)   \
+@@ -293,4 +307,5 @@ void IMPBackchannel::deinit() {
+     aacDecoderHandle = -1;
+   }
+ #endif
++#endif
+ }
+diff --git a/src/core/main.cpp b/src/core/main.cpp
+index 44f90a9..11bbbe1 100644
+--- a/src/core/main.cpp
++++ b/src/core/main.cpp
+@@ -217,7 +217,9 @@ void recover_stale_imp_state() {
+   }
+ 
+   for (int ch = 0; ch < 4; ++ch) {
++#if !defined(OPENIMP)
+     IMP_ADEC_DestroyChn(ch);
++#endif
+   }
+ 
+   IMP_AO_DisableChn(0, 0);
+diff --git a/src/isp/imp_control.cpp b/src/isp/imp_control.cpp
+index c3d6880..b4f8cef 100644
+--- a/src/isp/imp_control.cpp
++++ b/src/isp/imp_control.cpp
+@@ -415,7 +415,8 @@ const char *imp_control_get_channel_encoding_type(int channel) {
+  */
+ 
+ int imp_control_set_fisheye_status(int enable) {
+-#if defined(PLATFORM_T31) || defined(PLATFORM_C100) || defined(PLATFORM_T40)
++#if (defined(PLATFORM_T31) || defined(PLATFORM_C100) || defined(PLATFORM_T40)) && \
++    !defined(OPENIMP)
+   /* Fisheye control - channel 0 assumed */
+   return IMP_Encoder_SetFisheyeEnableStatus(0, enable);
+ #else
+-- 
+2.55.0
+
